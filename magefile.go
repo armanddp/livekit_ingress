@@ -107,7 +107,14 @@ func Build() error {
 		gopath = build.Default.GOPATH
 	}
 
-	return run(fmt.Sprintf("go build -a -o %s/bin/ingress ./cmd/server", gopath))
+	cmd := exec.Command("go", "build", "-a", "-o", fmt.Sprintf("%s/bin/ingress", gopath), "./cmd/server")
+	cmd.Env = append(os.Environ(),
+		"CGO_CFLAGS=-I/opt/homebrew/include",
+		"CGO_LDFLAGS=-L/opt/homebrew/lib -lsrt",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func Test() error {

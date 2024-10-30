@@ -20,6 +20,7 @@ import (
 
 	"github.com/livekit/ingress/pkg/config"
 	"github.com/livekit/ingress/pkg/rtmp"
+	"github.com/livekit/ingress/pkg/srt"
 	"github.com/livekit/ingress/pkg/whip"
 	"github.com/livekit/protocol/logger"
 )
@@ -28,12 +29,14 @@ type Relay struct {
 	server     *http.Server
 	rtmpServer *rtmp.RTMPServer
 	whipServer *whip.WHIPServer
+	srtServer  *srt.SRTServer
 }
 
-func NewRelay(rtmpServer *rtmp.RTMPServer, whipServer *whip.WHIPServer) *Relay {
+func NewRelay(rtmpServer *rtmp.RTMPServer, whipServer *whip.WHIPServer, srtServer *srt.SRTServer) *Relay {
 	return &Relay{
 		rtmpServer: rtmpServer,
 		whipServer: whipServer,
+		srtServer:  srtServer,
 	}
 }
 

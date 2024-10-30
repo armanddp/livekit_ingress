@@ -3,3 +3,6 @@
 bin/
 
 test/config.yaml
+config.yaml
+srtgo.txt
+livekit_protocol.txt

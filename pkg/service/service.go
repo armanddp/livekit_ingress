@@ -16,7 +16,7 @@ package service
 
 import (
 	"context"
-	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os/exec"
@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/ingress/pkg/config"
@@ -33,6 +32,7 @@ import (
 	"github.com/livekit/ingress/pkg/ipc"
 	"github.com/livekit/ingress/pkg/params"
 	"github.com/livekit/ingress/pkg/rtmp"
+	"github.com/livekit/ingress/pkg/srt"
 	"github.com/livekit/ingress/pkg/stats"
 	"github.com/livekit/ingress/pkg/types"
 	"github.com/livekit/ingress/pkg/whip"
@@ -63,6 +63,7 @@ type Service struct {
 	sm      *SessionManager
 	whipSrv *whip.WHIPServer
 	rtmpSrv *rtmp.RTMPServer
+	srtSrv  *srt.SRTServer
 
 	psrpcClient rpc.IOInfoClient
 	rpcSrv      rpc.IngressInternalServer
@@ -72,50 +73,112 @@ type Service struct {
 
 	isActive atomic.Bool
 	shutdown core.Fuse
+
+	ioCli         rpc.IOInfoClient
+	rtmpServer    *rtmp.RTMPServer
+	whipServer    *whip.WHIPServer
+	srtServer     *srt.SRTServer
+	processRunner func(ctx context.Context, p *params.Params) (*exec.Cmd, error)
+	nodeID        string
+	done          chan struct{}
+	kill          chan struct{}
 }
 
-func NewService(conf *config.Config, psrpcClient rpc.IOInfoClient, bus psrpc.MessageBus, rtmpSrv *rtmp.RTMPServer, whipSrv *whip.WHIPServer, newCmd func(ctx context.Context, p *params.Params) (*exec.Cmd, error), listIngressTopic string) (*Service, error) {
+func NewService(
+	conf *config.Config,
+	ioCli rpc.IOInfoClient,
+	messageBus psrpc.MessageBus,
+	rtmpServer *rtmp.RTMPServer,
+	whipServer *whip.WHIPServer,
+	srtServer *srt.SRTServer,
+	processRunner func(ctx context.Context, p *params.Params) (*exec.Cmd, error),
+	nodeID string,
+) (*Service, error) {
+	// Initialize monitor first as it's needed by SessionManager
 	monitor := stats.NewMonitor()
 
+	// Create service instance first since it implements IngressInternalServerImpl
 	s := &Service{
-		conf:        conf,
-		monitor:     monitor,
-		whipSrv:     whipSrv,
-		rtmpSrv:     rtmpSrv,
-		psrpcClient: psrpcClient,
-		bus:         bus,
+		conf:          conf,
+		ioCli:         ioCli,
+		bus:           messageBus,
+		rtmpServer:    rtmpServer,
+		whipServer:    whipServer,
+		srtServer:     srtServer,
+		processRunner: processRunner,
+		nodeID:        nodeID,
+		done:          make(chan struct{}),
+		kill:          make(chan struct{}),
+		monitor:       monitor,
 	}
 
-	srv, err := rpc.NewIngressInternalServer(s, bus)
+	// Create IngressInternalServer with the service as the implementation
+	internalServer, err := rpc.NewIngressInternalServer(s, messageBus)
 	if err != nil {
 		return nil, err
 	}
 
-	err = srv.RegisterListActiveIngressTopic(listIngressTopic)
-	if err != nil {
-		return nil, err
-	}
-	s.rpcSrv = srv
+	// Initialize SessionManager with its dependencies
+	sm := NewSessionManager(monitor, internalServer)
 
-	s.sm = NewSessionManager(monitor, srv)
+	// Initialize ProcessManager with its dependencies
+	pm := NewProcessManager(sm, processRunner)
 
-	s.manager = NewProcessManager(s.sm, newCmd)
-	s.isActive.Store(true)
-
-	s.manager.onFatalError(func(info *livekit.IngressInfo, err error) {
-		s.sendUpdate(context.Background(), info, err)
-
-		s.Stop(false)
-	})
-
-	if conf.PrometheusPort > 0 {
-		s.promServer = &http.Server{
-			Addr:    fmt.Sprintf(":%d", conf.PrometheusPort),
-			Handler: promhttp.Handler(),
-		}
-	}
+	// Set the remaining fields
+	s.manager = pm
+	s.sm = sm
+	s.rpcSrv = internalServer
 
 	return s, nil
+}
+
+// Add SRT stream handler method
+func (s *Service) handleSRTStream(streamKey string, stream io.ReadCloser) error {
+	resourceID := utils.NewGuid("IN_")
+	ctx := context.Background()
+
+	info := &livekit.IngressInfo{
+		InputType: livekit.IngressInput_RTMP_INPUT, // Using RTMP_INPUT temporarily
+		StreamKey: streamKey,
+		State: &livekit.IngressState{
+			Status:     livekit.IngressState_ENDPOINT_BUFFERING,
+			ResourceId: resourceID,
+			StartedAt:  time.Now().UnixNano(),
+		},
+	}
+
+	_, err := s.handleRequest(
+		ctx,
+		resourceID,
+		streamKey,
+		livekit.IngressInput_RTMP_INPUT, // Using RTMP_INPUT temporarily
+		info,
+		"",  // url
+		"",  // websocket url
+		nil, // headers
+	)
+
+	if err != nil {
+		logger.Errorw("failed to handle SRT stream", err)
+		return err
+	}
+
+	// TODO: Handle the stream data
+	go func() {
+		buf := make([]byte, 1316) // SRT default packet size
+		for {
+			_, err := stream.Read(buf)
+			if err != nil {
+				if err != io.EOF {
+					logger.Errorw("error reading from SRT stream", err)
+				}
+				return
+			}
+			// TODO: Process the stream data
+		}
+	}()
+
+	return nil
 }
 
 func (s *Service) HandleRTMPPublishRequest(streamKey, resourceId string) (*params.Params, *stats.LocalMediaStatsGatherer, error) {
@@ -450,12 +513,18 @@ func (s *Service) Resume() {
 	s.isActive.Store(true)
 }
 
-func (s *Service) Stop(kill bool) {
+func (s *Service) Stop(immediate bool) {
 	s.shutdown.Break()
 	s.monitor.Shutdown()
 
-	if kill {
+	if immediate {
 		s.manager.killAll()
+	}
+
+	if s.srtSrv != nil {
+		if err := s.srtSrv.Stop(); err != nil {
+			logger.Errorw("failed to stop SRT server", err)
+		}
 	}
 }
 

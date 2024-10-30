@@ -11,6 +11,7 @@ require (
 	github.com/go-gst/go-glib v1.3.0
 	github.com/go-gst/go-gst v1.3.0
 	github.com/gorilla/mux v1.8.1
+	github.com/haivision/srtgo v0.0.0-20230627061225-a70d53fcd618
 	github.com/livekit/go-rtmp v0.0.0-20230829211117-1c4f5a5c81ed
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240730083616-559fa5ece598

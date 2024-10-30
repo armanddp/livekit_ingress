@@ -33,6 +33,7 @@ import (
 	"github.com/livekit/ingress/pkg/params"
 	"github.com/livekit/ingress/pkg/rtmp"
 	"github.com/livekit/ingress/pkg/service"
+	"github.com/livekit/ingress/pkg/srt"
 	"github.com/livekit/ingress/pkg/whip"
 	"github.com/livekit/ingress/version"
 	"github.com/livekit/protocol/livekit"
@@ -117,6 +118,11 @@ func runService(c *cli.Context) error {
 		return err
 	}
 
+	ingressClient, err := rpc.NewIngressHandlerClient(bus)
+	if err != nil {
+		return err
+	}
+
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, syscall.SIGTERM, syscall.SIGQUIT)
 
@@ -125,20 +131,30 @@ func runService(c *cli.Context) error {
 
 	var rtmpsrv *rtmp.RTMPServer
 	var whipsrv *whip.WHIPServer
+	var srtsrv *srt.SRTServer
+
 	if conf.RTMPPort > 0 {
-		// Run RTMP server
 		rtmpsrv = rtmp.NewRTMPServer()
 	}
-	if conf.WHIPPort > 0 {
-		psrpcWHIPClient, err := rpc.NewIngressHandlerClient(bus)
-		if err != nil {
-			return err
-		}
 
-		whipsrv = whip.NewWHIPServer(psrpcWHIPClient)
+	if conf.WHIPPort > 0 {
+		whipsrv = whip.NewWHIPServer(ingressClient)
 	}
 
-	svc, err := service.NewService(conf, psrpcClient, bus, rtmpsrv, whipsrv, service.NewCmd, "")
+	if conf.SRTPort > 0 {
+		srtsrv = srt.NewSRTServer()
+	}
+
+	svc, err := service.NewService(
+		conf,
+		psrpcClient,
+		bus,
+		rtmpsrv,
+		whipsrv,
+		srtsrv,
+		service.NewCmd,
+		"",
+	)
 	if err != nil {
 		return err
 	}
@@ -150,7 +166,7 @@ func runService(c *cli.Context) error {
 		return err
 	}
 
-	relay := service.NewRelay(rtmpsrv, whipsrv)
+	relay := service.NewRelay(rtmpsrv, whipsrv, srtsrv)
 
 	if rtmpsrv != nil {
 		err = rtmpsrv.Start(conf, svc.HandleRTMPPublishRequest)
@@ -160,6 +176,12 @@ func runService(c *cli.Context) error {
 	}
 	if whipsrv != nil {
 		err = whipsrv.Start(conf, svc.HandleWHIPPublishRequest, svc.GetHealthHandlers())
+		if err != nil {
+			return err
+		}
+	}
+	if srtsrv != nil {
+		err = srtsrv.Start(conf.SRTPort)
 		if err != nil {
 			return err
 		}
@@ -185,6 +207,9 @@ func runService(c *cli.Context) error {
 			}
 			if whipsrv != nil {
 				whipsrv.Stop()
+			}
+			if srtsrv != nil {
+				srtsrv.Stop()
 			}
 
 		}

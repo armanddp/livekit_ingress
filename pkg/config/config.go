@@ -58,6 +58,8 @@ type ServiceConfig struct {
 	HTTPRelayPort    int           `yaml:"http_relay_port"`
 	Logging          logger.Config `yaml:"logging"`
 	Development      bool          `yaml:"development"`
+	SRTPort          int           `yaml:"srt_port"`
+	SRT              SRTConfig     `yaml:"srt"`
 
 	// Used for WHIP transport
 	RTCConfig rtcconfig.RTCConfig `yaml:"rtc_config"`
@@ -78,6 +80,14 @@ type CPUCostConfig struct {
 	WHIPBypassTranscodingCpuCost float64 `yaml:"whip_bypass_transcoding_cpu_cost"`
 	URLCpuCost                   float64 `yaml:"url_cpu_cost"`
 	MinIdleRatio                 float64 `yaml:"min_idle_ratio"` // Target idle cpu ratio when deciding availability for new requests
+}
+
+type SRTConfig struct {
+	Port       int    `yaml:"port"`
+	Latency    int    `yaml:"latency"`  // milliseconds
+	MaxBW      int64  `yaml:"max_bw"`   // bits per second
+	PbKeyLen   int    `yaml:"pbkeylen"` // crypto key length
+	Passphrase string `yaml:"passphrase,omitempty"`
 }
 
 func NewConfig(confString string) (*Config, error) {

@@ -22,3 +22,9 @@ const (
 	Interleaved StreamKind = "interleaved"
 	Unknown     StreamKind = "unknown"
 )
+
+type Protocol string
+
+const (
+	ProtocolSRT Protocol = "srt"
+)
